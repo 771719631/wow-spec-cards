@@ -8,6 +8,8 @@ import {
   queuedUnits,
   skipCurrent,
   teamSp,
+  teamSpMeter,
+  nextSpGrant,
   validTargets,
   createBattle,
   skillCost,
@@ -20,13 +22,14 @@ import {
   type FloatText,
 } from '../engine/battle'
 import type { BattleState, Side, SkillDef, SkillId, Unit } from '../engine/types'
-import { wowIcon } from '../engine/types'
+import { SP_METER_MAX, wowIcon } from '../engine/types'
 import { escapeHtml, renderBattleCard, renderDraftCard, roleIconSvg, specArtImg } from './card'
 import { playSkillSfx } from './sfx'
 import { playBattleFx, setFxPaused, stopBattleFx, interruptBattleFx } from '../fx/play'
+import { adminHtml, bindAdmin } from './admin'
 import { playOxShare, playStaggerHit } from '../fx/brew'
 
-type Screen = 'title' | 'draft' | 'battle' | 'result'
+type Screen = 'title' | 'draft' | 'battle' | 'result' | 'admin'
 const ACTION_PAUSE_MS = 3000
 const ACTION_PAUSE_FAST_MS = 1500
 
@@ -121,6 +124,7 @@ function specSkin(specId: string): string {
 }
 
 export function startApp(): void {
+  if (location.hash === '#admin') screen = 'admin'
   render()
 }
 
@@ -130,36 +134,59 @@ function render(): void {
     logStickToEnd = prevLog.scrollHeight - prevLog.scrollTop - prevLog.clientHeight < 28
     logScrollTop = prevLog.scrollTop
   }
-  const grid = app().querySelector('.draft-main')
+  const grid = app().querySelector('.draft-scroller')
   if (grid) draftScrollY = grid.scrollTop
   const canvas = document.querySelector<HTMLCanvasElement>('.fx-canvas')
   const root = app()
   if (screen === 'title') root.innerHTML = titleHtml()
   else if (screen === 'draft') root.innerHTML = draftHtml()
   else if (screen === 'battle') root.innerHTML = battleHtml()
+  else if (screen === 'admin') root.innerHTML = adminHtml()
   else root.innerHTML = resultHtml()
   if (canvas && screen === 'battle') {
     document.querySelector('.battle-screen')?.appendChild(canvas)
   }
   bind()
+  if (screen === 'admin') bindAdmin(root, render)
   kickSkinVideos()
   restoreLogScroll()
   if (screen === 'draft') {
-    const main = app().querySelector('.draft-main')
+    const main = app().querySelector('.draft-scroller')
     if (main) main.scrollTop = draftScrollY
   }
   if (floats.length) playFloats()
 }
 
+let skinVideoObserver: IntersectionObserver | null = null
+
 function kickSkinVideos(): void {
-  app()
-    .querySelectorAll<HTMLVideoElement>('video.wow-icon')
-    .forEach((video) => {
-      video.muted = true
-      video.playsInline = true
-      const play = video.play()
-      if (play) void play.catch(() => {})
-    })
+  skinVideoObserver?.disconnect()
+  const videos = [...app().querySelectorAll<HTMLVideoElement>('video.wow-icon')]
+  if (!videos.length) {
+    skinVideoObserver = null
+    return
+  }
+  skinVideoObserver = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        const video = entry.target as HTMLVideoElement
+        if (entry.isIntersecting) {
+          video.muted = true
+          video.playsInline = true
+          void video.play().catch(() => {})
+        } else {
+          video.pause()
+        }
+      }
+    },
+    { rootMargin: '64px' },
+  )
+  for (const video of videos) {
+    video.muted = true
+    video.playsInline = true
+    video.preload = 'none'
+    skinVideoObserver.observe(video)
+  }
 }
 
 function titleHtml(): string {
@@ -167,8 +194,11 @@ function titleHtml(): string {
     <div class="screen title-screen">
       <div class="title-mark">WORLD OF WARCRAFT</div>
       <h1>专精卡牌对战</h1>
-      <p class="lead">5 对 5。技能点全队共用，速度决定出手顺序。普攻回复技能点，治疗专精可灌注技能点，再打出标志技能。</p>
-      <button type="button" class="btn gold" data-go="draft">开始征召</button>
+      <p class="lead">5 对 5。技能点全队共用，速度决定出手顺序。友方每行动一次为充能条填一格，满格后再行动获得技能点。普攻仍回复技能点。</p>
+      <div class="title-actions">
+        <button type="button" class="btn gold" data-go="draft">开始征召</button>
+        <button type="button" class="btn ghost" data-go="admin">后台管理</button>
+      </div>
       <p class="disclaimer">粉丝向个人作品。图标来自 Wowhead，与暴雪娱乐无关。</p>
     </div>
   `
@@ -231,7 +261,7 @@ function draftHtml(): string {
         <nav class="draft-rail" aria-label="职业列表">${rail}</nav>
         <div class="draft-main">
           <div class="picked-bar" id="picked-bar">${picked || '<span class="hint">从左侧点职业，或直接点中间卡牌加入阵容。</span>'}</div>
-          <div class="draft-grid">${groups}</div>
+          <div class="draft-scroller">${groups}</div>
         </div>
         <aside class="draft-dock">${draftInspectHtml()}</aside>
       </div>
@@ -315,11 +345,9 @@ function battleHtml(): string {
       <div class="yard" aria-hidden="true"></div>
       ${queueHtml()}
       ${turnMarkHtml()}
-      <div class="obj-banner">击败全部敌人!</div>
       ${utilHtml()}
       <div class="battle-center">
         <div class="lane enemy-lane">
-          ${teamSpHtml('ai')}
           <div class="lane-cards">${aiHeroes}</div>
           ${aiPets ? `<div class="pet-row">${aiPets}</div>` : ''}
         </div>
@@ -333,6 +361,7 @@ function battleHtml(): string {
       <div class="hud">
         ${actorPanelHtml()}
       </div>
+      ${teamSpHtml('player')}
       <div class="skill-corner">
         ${skillRadialHtml()}
       </div>
@@ -421,18 +450,40 @@ function oxMarkSvg(): string {
 function teamSpHtml(side: Side): string {
   if (!battle) return ''
   const sp = teamSp(battle, side)
+  const meter = teamSpMeter(battle, side)
+  const grant = nextSpGrant(battle, side)
   const brew = battle.units.some((u) => u.side === side && u.specId === 'monk-brew' && u.hp > 0)
-  const orbs = Array.from({ length: battle.maxSp }, (_, i) => {
-    const filled = i < sp
-    return `<span class="orb ${filled ? 'is-on' : ''}"></span>`
+  const rings = Array.from({ length: sp }, () => `<span class="sp-ring"></span>`).join('')
+  const segs = Array.from({ length: SP_METER_MAX }, (_, i) => {
+    const on = i < meter
+    const head = on && i === meter - 1
+    return `<i class="sp-seg ${on ? 'is-on' : ''} ${head ? 'is-head' : ''}"></i>`
   }).join('')
   const label = side === 'ai' ? '敌方技能点' : '技能点'
-  return `<div class="team-sp ${side} ${brew ? 'is-brew' : ''}" title="${label}"><span class="team-sp-label">${label}</span><span class="team-sp-num">可用 ${sp}/${battle.maxSp}</span><div class="sp-row">${orbs}</div></div>`
+  const ready = meter >= SP_METER_MAX
+  return `
+    <div class="sp-meter team-sp ${side} ${brew ? 'is-brew' : ''} ${ready ? 'is-ready' : ''}" title="${label} ${sp}/${battle.maxSp} · 充能 ${meter}/${SP_METER_MAX} · 下一次满格 +${grant}">
+      <div class="sp-row sp-meter-rings">${rings}</div>
+      <div class="sp-meter-frame">
+        <svg class="sp-meter-chrome" viewBox="0 0 520 64" preserveAspectRatio="none" aria-hidden="true">
+          <path d="M18 8 L248 8 L260 2 L272 8 L502 8 L516 32 L502 56 L272 56 L260 62 L248 56 L18 56 L4 32 Z" fill="#12100c" stroke="#c4a056" stroke-width="2"/>
+          <path d="M22 12 L248 12 L260 7 L272 12 L498 12 L510 32 L498 52 L272 52 L260 57 L248 52 L22 52 L10 32 Z" fill="none" stroke="#2a2418" stroke-width="1.2"/>
+          <path d="M18 8 L4 32 L18 56" fill="none" stroke="#8a7340" stroke-width="1.4"/>
+          <path d="M502 8 L516 32 L502 56" fill="none" stroke="#8a7340" stroke-width="1.4"/>
+          <path d="M248 8 L260 2 L272 8" fill="none" stroke="#c4a056" stroke-width="1.2"/>
+          <path d="M248 56 L260 62 L272 56" fill="none" stroke="#c4a056" stroke-width="1.2"/>
+        </svg>
+        <span class="sp-meter-cur">${sp}/${battle.maxSp}</span>
+        <div class="sp-meter-track">${segs}</div>
+        <span class="sp-meter-gain">+${grant}</span>
+      </div>
+    </div>
+  `
 }
 
 function actorPanelHtml(): string {
   if (!battle) return ''
-  const actor = uiActor()
+  const actor = viewedUnit()
   if (!actor) {
     return `<div class="actor-panel is-empty"><p>等待出手…</p></div>`
   }
@@ -450,7 +501,7 @@ function actorPanelHtml(): string {
     actor.executeFree ? statusChip(wowIcon('inv_sword_48'), '下一次斩杀不耗技能点') : '',
     actor.specId === 'warrior-arms' ? statusChip(wowIcon('ability_rogue_slicedice'), '横扫攻击') : '',
     actor.ardentPct > 0
-      ? statusChip(wowIcon('ability_paladin_veneration'), `炽热防御者 +${actor.ardentPct}% 攻击与生命`)
+      ? statusChip(wowIcon('spell_holy_ardentdefender'), `炽热防御者 +${actor.ardentPct}% 攻击与生命`)
       : '',
     actor.hots.length > 0
       ? statusChip(
@@ -536,7 +587,6 @@ function actorPanelHtml(): string {
         </div>
         <div class="actor-status"><span>状态</span>${statuses || '<em>无</em>'}</div>
         <p class="actor-flavor">${escapeHtml(flavor)}</p>
-        ${teamSpHtml('player')}
       </div>
     </div>
   `
@@ -635,7 +685,7 @@ function rulesHtml(): string {
   return `
     <div class="dock-box dock-rules">
       <div class="inspect-head">规则提示</div>
-      <p class="inspect-hint">技能点全队共用，最多 8 点，开场 3 点。速度决定出手顺序。普攻回复 1 点技能点。点击卡牌可查看该角色技能详情。</p>
+      <p class="inspect-hint">技能点全队共用，最多 8 点，开场 3 点。友方每行动一次为中间充能条填 1 格；5 格满后再行动获得技能点（首次 +3，第二次 +4，之后固定 +5）。普攻仍回复技能点。点击卡牌可查看该角色技能详情。</p>
     </div>
   `
 }
@@ -692,7 +742,7 @@ function logHtml(): string {
 function skillCostLabel(unit: Unit | null, skill: SkillDef): string {
   if (skill.passive || skill.effect.kind === 'stagger') return '被动'
   if (skill.effect.kind === 'gain-sp') return `+${skill.effect.value} 点`
-  if (skill.id === 'aa') return '回 1 点'
+  if (skill.gainSp) return `回 ${skill.gainSp} 点`
   const cost = unit ? skillCost(unit, skill) : skill.cost
   if (cost === 0 && skill.cost > 0) {
     if (skill.effect.kind === 'execute') return '免费'
@@ -797,7 +847,16 @@ function viewedUnit(): Unit | null {
     const unit = battle.units.find((u) => u.uid === inspectedUid)
     if (unit) return unit
   }
-  return uiActor()
+  if (lastCue) {
+    return battle.units.find((u) => u.uid === lastCue!.actorUid) ?? currentActor(battle)
+  }
+  const actor = currentActor(battle)
+  if (actor?.side === 'player') return actor
+  if (inspectedUid) {
+    const unit = battle.units.find((u) => u.uid === inspectedUid)
+    if (unit) return unit
+  }
+  return actor
 }
 
 function selectedUnit(): Unit | null {
@@ -827,8 +886,10 @@ function syncActorSelection(): void {
   selectedUid = actor?.side === 'player' ? actor.uid : null
   selectedSkill = null
   viewedSkill = null
-  viewPinned = false
-  inspectedUid = actor?.uid ?? null
+  if (actor?.side === 'player') {
+    viewPinned = false
+    inspectedUid = actor.uid
+  }
 }
 
 function bind(): void {
@@ -915,6 +976,7 @@ function togglePaused(): void {
 
 function go(next: Screen): void {
   screen = next
+  location.hash = next === 'admin' ? 'admin' : ''
   clearPause()
   lastCue = null
   busy = false

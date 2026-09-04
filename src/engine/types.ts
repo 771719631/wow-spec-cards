@@ -57,6 +57,8 @@ export interface SkillDef {
   cost: number
   gainSp?: number
   passive?: boolean
+  cooldown?: number
+  note?: string
   effect: SkillEffect
   target: TargetMode
   desc: string
@@ -136,6 +138,7 @@ export interface Unit {
   ebonTurns: number
   nextTakenAmp: number
   skinId: string
+  skillCd: Partial<Record<SkillId, number>>
 }
 
 export interface BattleState {
@@ -146,17 +149,23 @@ export interface BattleState {
   playerSp: number
   aiSp: number
   maxSp: number
+  playerSpMeter: number
+  aiSpMeter: number
+  playerSpCycles: number
+  aiSpCycles: number
   log: string[]
   winner: Side | null
 }
 
 export const TEAM_MAX_SP = 8
 export const TEAM_START_SP = 3
+export const SP_METER_MAX = 5
 export const DEFAULT_CRIT = 20
 export const DEFAULT_CRIT_DMG = 150
 
-export function wowIcon(name: string, size: 'large' | 'medium' = 'large'): string {
-  return `https://wow.zamimg.com/images/wow/icons/${size}/${name.toLowerCase()}.jpg`
+export function wowIcon(name: string, _size: 'large' | 'medium' = 'large'): string {
+  const base = import.meta.env.BASE_URL
+  return encodeURI(`${base}icons/${name.toLowerCase()}.jpg`)
 }
 
 export function targetOf(kind: EffectKind): TargetMode {

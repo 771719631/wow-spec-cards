@@ -8,7 +8,7 @@ export function specArtImg(spec: SpecDef, skinId?: string, live = false): string
   const still = stillUrl(spec, skinId)
   const video = live ? videoUrl(spec, skinId) : null
   if (video) {
-    return `<video class="wow-icon" src="${video}" poster="${still}" muted loop playsinline autoplay preload="metadata"></video>`
+    return `<video class="wow-icon" src="${video}" poster="${still}" muted loop playsinline preload="none"></video>`
   }
   return `<img class="wow-icon" src="${still}" alt="${alt}" draggable="false" loading="lazy" decoding="async" />`
 }
@@ -34,7 +34,7 @@ export function renderDraftCard(
   return `
     <button type="button" class="card draft-card ${selected ? 'is-selected' : ''} ${inspected ? 'is-inspect' : ''} ${extra ? 'can-skin' : ''} ${custom ? 'has-skin' : ''}" data-spec="${spec.id}" style="--class:${spec.color}">
       ${extra ? `<span class="skin-btn" data-skin-toggle="${spec.id}" title="切换 ${extra.name}" role="button">皮</span>` : ''}
-      <div class="card-art">${specArtImg(spec, skinId, true)}</div>
+      <div class="card-art">${specArtImg(spec, skinId, false)}</div>
       <div class="card-caption">
         <div class="card-spec">${spec.specName}</div>
       </div>

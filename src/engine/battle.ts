@@ -6,8 +6,8 @@ import {
   PET_POOL,
   presentSkill,
 } from '../data/specs'
-import type { BattleState, Side, SkillDef, SkillId, Unit } from './types'
-import { TEAM_MAX_SP, TEAM_START_SP } from './types'
+import { SP_METER_MAX, type BattleState, type Side, type SkillDef, type SkillId, type Unit } from './types'
+import { battleParams } from '../data/config-store'
 
 export function unitName(unit: Unit): string {
   const spec = getSpec(unit.specId)
@@ -26,6 +26,39 @@ export function setTeamSp(state: BattleState, side: Side, value: number): void {
   const next = Math.max(0, Math.min(state.maxSp, value))
   if (side === 'player') state.playerSp = next
   else state.aiSp = next
+}
+
+export function teamSpMeter(state: BattleState, side: Side): number {
+  return side === 'player' ? state.playerSpMeter : state.aiSpMeter
+}
+
+export function nextSpGrant(state: BattleState, side: Side): number {
+  const cycles = side === 'player' ? state.playerSpCycles : state.aiSpCycles
+  if (cycles <= 0) return 3
+  if (cycles === 1) return 4
+  return 5
+}
+
+function chargeTeamSp(state: BattleState, side: Side): void {
+  const meter = teamSpMeter(state, side)
+  if (meter >= SP_METER_MAX) {
+    const grant = nextSpGrant(state, side)
+    const before = teamSp(state, side)
+    setTeamSp(state, side, before + grant)
+    const got = teamSp(state, side) - before
+    if (side === 'player') {
+      state.playerSpMeter = 0
+      state.playerSpCycles += 1
+    } else {
+      state.aiSpMeter = 0
+      state.aiSpCycles += 1
+    }
+    if (got > 0) pushLog(state, `行动充能完成，获得 ${got} 点技能点`)
+    else pushLog(state, '行动充能完成，技能点已满')
+    return
+  }
+  if (side === 'player') state.playerSpMeter = meter + 1
+  else state.aiSpMeter = meter + 1
 }
 
 export function speedOf(unit: Unit): number {
@@ -110,6 +143,7 @@ export function canUseSkill(state: BattleState, unit: Unit, skill: SkillDef): bo
   if (skill.effect.kind === 'metamorphosis' && unit.metaTurns > 0) {
     return false
   }
+  if ((unit.skillCd[skill.id] ?? 0) > 0) return false
   return teamSp(state, unit.side) >= skillCost(unit, skill)
 }
 
@@ -141,15 +175,20 @@ export function createBattle(
     ...playerSpecIds.map((id, i) => makeUnit(id, 'player', i, playerSkins[id])),
     ...aiSpecIds.map((id, i) => makeUnit(id, 'ai', i)),
   ]
+  const params = battleParams()
   const state: BattleState = {
     units,
     queue: [],
     turn: 'player',
     round: 1,
-    playerSp: TEAM_START_SP,
-    aiSp: TEAM_START_SP,
-    maxSp: TEAM_MAX_SP,
-    log: ['开战。技能点全队共用，速度快的先出手。'],
+    playerSp: params.startSp,
+    aiSp: params.startSp,
+    maxSp: params.maxSp,
+    playerSpMeter: 0,
+    aiSpMeter: 0,
+    playerSpCycles: 0,
+    aiSpCycles: 0,
+    log: ['开战。技能点全队共用，速度快的先出手。友方每行动一次为充能条填一格。'],
     winner: null,
   }
   hangingFloats = []
@@ -206,6 +245,7 @@ function makeUnit(specId: string, side: Side, index: number, skinId?: string): U
     ebonTurns: 0,
     nextTakenAmp: 0,
     skinId: skinId || 'classic',
+    skillCd: {},
   }
 }
 
@@ -267,10 +307,12 @@ export function applyAction(
   const usedFree = actor.freeSkill && skill.cost > 0
   setTeamSp(state, actor.side, teamSp(state, actor.side) - cost)
   if (skill.gainSp) setTeamSp(state, actor.side, teamSp(state, actor.side) + skill.gainSp)
+  chargeTeamSp(state, actor.side)
   actor.acted = true
   actor.priorityAct = false
   if (usedFree) actor.freeSkill = false
   if (actor.specId === 'warrior-arms' && skill.id === 's3') actor.executeFree = false
+  if (skill.cooldown && skill.cooldown > 0) actor.skillCd[skill.id] = skill.cooldown
 
   const shown = presentSkill(skill, actor)
   pushLog(state, `${unitName(actor)} 使用了 ${shown.name}`)
@@ -693,8 +735,14 @@ function maybeSweepingStrikes(
   const others = living(state.units, opposite(actor.side)).filter((u) => u.uid !== primary.uid)
   if (others.length === 0) return null
   const t = others[Math.floor(Math.random() * others.length)]
-  const dmg = fromAtk(actor, sweep.effect.value)
-  pushLog(state, `${unitName(actor)} 的横扫攻击波及 ${unitName(t)}`)
+  const dealt = floats.reduce((sum, item) => {
+    if (item.uid !== primary.uid) return sum
+    if (item.kind !== 'damage' && item.kind !== 'kill') return sum
+    const n = Number(/^[-−]?(\d+)/.exec(item.text)?.[1] ?? 0)
+    return sum + n
+  }, 0)
+  const dmg = Math.max(1, Math.round(dealt * (sweep.effect.value / 100)))
+  pushLog(state, `${unitName(actor)} 的横扫攻击波及 ${unitName(t)}，为 ${skill.name} 伤害的 ${sweep.effect.value}%`)
   const hits = dealDamage(state, actor, t, dmg, sweep.name)
   for (const hit of hits) hit.delay = 280
   floats.push(...hits)
@@ -1229,7 +1277,14 @@ function newRound(state: BattleState): void {
   }
   checkWinner(state)
   if (state.winner) return
-  for (const unit of state.units) unit.acted = false
+  for (const unit of state.units) {
+    unit.acted = false
+    for (const id of Object.keys(unit.skillCd) as SkillId[]) {
+      const left = unit.skillCd[id] ?? 0
+      if (left <= 1) delete unit.skillCd[id]
+      else unit.skillCd[id] = left - 1
+    }
+  }
   rebuildQueue(state)
   pushLog(state, `—— 第 ${state.round} 轮 ——`)
   beginTurn(state)

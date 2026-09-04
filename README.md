@@ -4,6 +4,10 @@
 
 图标来自 [Wowhead](https://www.wowhead.com/)，与暴雪娱乐无关。
 
+## 在线游玩
+
+https://771719631.github.io/wow-spec-cards/
+
 ## 本地运行
 
 ```bash

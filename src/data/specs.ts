@@ -1,5 +1,6 @@
 import type { EffectKind, Role, SkillDef, SkillId, SpecDef } from '../engine/types'
 import { DEFAULT_CRIT, DEFAULT_CRIT_DMG, targetOf } from '../engine/types'
+import { battleParams, specPatch } from './config-store'
 
 const COLORS: Record<string, string> = {
   warrior: '#C79C6E',
@@ -192,7 +193,7 @@ function skillDesc(
       text = `使一名友方立即获得回合，并在本回合伤害提高 ${value}%`
       break
     case 'sweep':
-      text = `被动：致死打击、巨人打击和斩杀会额外对随机另一名敌人造成${hit}。此次额外伤害不触发降低治疗、提升受到伤害、斩杀击杀获得额外回合等效果`
+      text = `被动：致死打击、巨人打击和斩杀会额外对随机另一名敌人造成其本次伤害的 ${value}%。此次额外伤害不触发降低治疗、提升受到伤害、斩杀击杀获得额外回合等效果`
       break
     case 'ardent':
       text = `永久提升自身攻击力和生命值 ${value}%。效果持续期间，每有一名队友阵亡，再永久提升 ${extra ?? 20}% 攻击力和生命值`
@@ -285,6 +286,7 @@ function sk(
     icon,
     cost,
     gainSp,
+    note,
     passive: kind === 'stagger' || kind === 'rooted' || kind === 'sweep' || kind === 'boneshield' || kind === 'clearcast' || kind === 'prescience',
     effect: extra === undefined ? { kind, value } : { kind, value, extra },
     target: targetOf(kind),
@@ -348,7 +350,7 @@ export const SPECS: SpecDef[] = [
     sk('aa', '审判', 'spell_holy_righteousfury', 0, 'damage', 100, undefined, 1),
     sk('s1', '正义盾击', 'ability_paladin_shieldofvengeance', 1, 'damage', 160, 10, undefined, '为己方全体恢复当前角色攻击力的 10% 的生命值'),
     sk('s2', '复仇者之盾', 'spell_holy_avengersshield', 2, 'aoe', 33, undefined, undefined, '盾牌弹射敌方所有目标'),
-    sk('s3', '炽热防御者', 'ability_paladin_veneration', 5, 'ardent', 40, 20),
+    sk('s3', '炽热防御者', 'spell_holy_ardentdefender', 5, 'ardent', 40, 20),
   ]),
   spec('paladin-ret', 'paladin', '圣骑士', '惩戒', 'dps', 'spell_holy_auraoflight', [
     sk('aa', '十字军打击', 'spell_holy_crusaderstrike', 0, 'damage', 100, undefined, 1),
@@ -402,7 +404,7 @@ export const SPECS: SpecDef[] = [
     sk('aa', '惩击', 'spell_holy_holysmite', 0, 'damage', 100, undefined, 1),
     sk('s1', '快速治疗', 'spell_holy_flashheal', 1, 'heal', 325),
     sk('s2', '能量灌注', 'spell_holy_powerinfusion', 2, 'empower', 20, 1),
-    sk('s3', '神圣赞美诗', 'spell_holy_divineprovidence', 3, 'heal-aoe', 300),
+    sk('s3', '神圣赞美诗', 'spell_holy_divinehymn', 3, 'heal-aoe', 300),
   ]),
   spec('priest-shadow', 'priest', '牧师', '暗影', 'dps', 'spell_shadow_shadowwordpain', [
     sk('aa', '心灵震爆', 'spell_shadow_unholyfrenzy', 0, 'damage', 100, undefined, 1),
@@ -483,7 +485,7 @@ export const SPECS: SpecDef[] = [
     sk('s3', '火焰之雨', 'spell_shadow_rainoffire', 4, 'aoe', 83, 4),
   ], 95),
   spec('monk-brew', 'monk', '武僧', '酿酒', 'tank', 'spell_monk_brewmaster_spec', [
-    sk('aa', '醉酿投', 'inv_misc_beer_06', 0, 'damage', 100, undefined, 1),
+    sk('aa', '醉酿投', 'achievement_brewery_2', 0, 'damage', 100, undefined, 1),
     sk('s1', '天神灌注', 'ability_monk_tigereyebrandy', 2, 'infuse', 320, 30),
     sk('s2', '醉拳', 'monk_stance_drunkenox', 0, 'stagger', 50),
     sk('s3', '玄牛下凡', 'spell_monk_brewmaster_spec', 3, 'guard', 50, 2),
@@ -551,7 +553,7 @@ export const SPECS: SpecDef[] = [
   spec('evoker-pres', 'evoker', '唤魔师', '恩护', 'healer', 'classicon_evoker_preservation', [
     sk('aa', '活化烈焰', 'ability_evoker_livingflame', 0, 'damage', 100, undefined, 1),
     sk('s1', '回响', 'ability_evoker_echo', 1, 'heal', 325),
-    sk('s2', '魔力之源', 'ability_evoker_sourceofmagic', 0, 'gain-sp', 2),
+    sk('s2', '魔力之源', 'ability_evoker_blue_01', 0, 'gain-sp', 2),
     sk('s3', '梦境吐息', 'ability_evoker_dreambreath', 3, 'heal-aoe', 300),
   ]),
   spec('evoker-aug', 'evoker', '唤魔师', '增辉', 'dps', 'classicon_evoker_augmentation', [
@@ -605,6 +607,51 @@ export const CLASS_ORDER = [
 export const SPEC_MAP = Object.fromEntries([...SPECS, ...PET_SPECS].map((s) => [s.id, s])) as Record<string, SpecDef>
 
 export function getSpec(id: string): SpecDef {
+  const specDef = SPEC_MAP[id]
+  if (!specDef) throw new Error(`未知专精: ${id}`)
+  const patch = specPatch(id)
+  const battle = battleParams()
+  if (!patch) {
+    return {
+      ...specDef,
+      crit: specDef.crit === DEFAULT_CRIT ? battle.defaultCrit : specDef.crit,
+      critDmg: specDef.critDmg === DEFAULT_CRIT_DMG ? battle.defaultCritDmg : specDef.critDmg,
+    }
+  }
+  return {
+    ...specDef,
+    maxHp: patch.maxHp ?? specDef.maxHp,
+    speed: patch.speed ?? specDef.speed,
+    atk: patch.atk ?? specDef.atk,
+    crit: patch.crit ?? (specDef.crit === DEFAULT_CRIT ? battle.defaultCrit : specDef.crit),
+    critDmg: patch.critDmg ?? (specDef.critDmg === DEFAULT_CRIT_DMG ? battle.defaultCritDmg : specDef.critDmg),
+    skills: specDef.skills.map((skill) => {
+      const sp = patch.skills?.[skill.id]
+      if (!sp) {
+        return {
+          ...skill,
+          effect: { ...skill.effect },
+          desc: skillDesc(skill.effect.kind, skill.effect.value, skill.effect.extra, skill.gainSp, skill.note),
+        }
+      }
+      const gainSp = sp.gainSp === null ? undefined : (sp.gainSp ?? skill.gainSp)
+      const value = sp.value ?? skill.effect.value
+      const extra = sp.extra ?? skill.effect.extra
+      return {
+        ...skill,
+        name: sp.name ?? skill.name,
+        icon: sp.icon ?? skill.icon,
+        cost: sp.cost ?? skill.cost,
+        gainSp,
+        cooldown: sp.cooldown ?? skill.cooldown,
+        effect: { ...skill.effect, value, extra },
+        desc: skillDesc(skill.effect.kind, value, extra, gainSp, skill.note),
+      }
+    }) as SpecDef['skills'],
+  }
+}
+
+export function getBaseSpec(id: string): SpecDef {
   const specDef = SPEC_MAP[id]
   if (!specDef) throw new Error(`未知专精: ${id}`)
   return specDef

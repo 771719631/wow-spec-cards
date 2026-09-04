@@ -75,7 +75,8 @@ export function resolveSkin(specId: string, skinId?: string): string {
 }
 
 function asset(path: string): string {
-  return encodeURI(`/${path}`)
+  const base = import.meta.env.BASE_URL
+  return encodeURI(`${base}${path.replace(/^\//, '')}`)
 }
 
 /** Relative to Vite publicDir (`素材/`). */

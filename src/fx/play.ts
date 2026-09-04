@@ -15,6 +15,7 @@ import { playHavocFx } from './havoc'
 import { playAugFx } from './aug'
 import { clearFxLayers, destroyFxStage, ensureFxStage } from './stage'
 import type { FxContext } from './types'
+import { fxFor } from '../data/config-store'
 
 let current: gsap.core.Timeline | null = null
 
@@ -42,34 +43,24 @@ export async function playBattleFx(ctx: FxContext): Promise<void> {
       ctx.onImpact()
     },
   }
-  const tl =
-    wrapped.specId === 'rogue-outlaw'
-      ? playOutlawFx(wrapped)
-      : wrapped.specId === 'monk-brew'
-        ? playBrewFx(wrapped)
-        : wrapped.specId === 'shaman-ele'
-          ? playEleFx(wrapped)
-          : wrapped.specId === 'priest-holy'
-            ? playPriestFx(wrapped)
-            : wrapped.specId === 'warlock-destro'
-              ? playDestroFx(wrapped)
-              : wrapped.specId === 'warrior-arms'
-                ? playArmsFx(wrapped)
-                : wrapped.specId === 'paladin-prot'
-                  ? playProtFx(wrapped)
-                  : wrapped.specId === 'druid-resto'
-                    ? playRestoFx(wrapped)
-                    : wrapped.specId === 'hunter-bm'
-                      ? playBmFx(wrapped)
-                      : wrapped.specId === 'dk-blood'
-                        ? playBloodFx(wrapped)
-                        : wrapped.specId === 'mage-arcane'
-                          ? playArcaneFx(wrapped)
-                          : wrapped.specId === 'dh-havoc'
-                            ? playHavocFx(wrapped)
-                            : wrapped.specId === 'evoker-aug'
-                              ? playAugFx(wrapped)
-                              : playGenericFx(wrapped)
+  const fxName = fxFor(wrapped.specId, wrapped.skillId)
+  const players: Record<string, (ctx: FxContext) => gsap.core.Timeline> = {
+    outlaw: playOutlawFx,
+    brew: playBrewFx,
+    ele: playEleFx,
+    priest: playPriestFx,
+    destro: playDestroFx,
+    arms: playArmsFx,
+    prot: playProtFx,
+    resto: playRestoFx,
+    bm: playBmFx,
+    blood: playBloodFx,
+    arcane: playArcaneFx,
+    havoc: playHavocFx,
+    aug: playAugFx,
+    generic: playGenericFx,
+  }
+  const tl = (players[fxName] ?? playGenericFx)(wrapped)
   current = tl
   if (wrapped.paused) tl.pause()
   const wallMs = Math.max(400, (tl.duration() / Math.max(tl.timeScale() || 1, 0.01)) * 1000 + 120)
